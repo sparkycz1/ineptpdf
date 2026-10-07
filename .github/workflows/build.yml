@@ -1,0 +1,74 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  executable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: linux-x86_64
+          - os: windows-latest
+            asset: windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: Test
+        run: uv run pytest
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ./build.sh
+          ./dist/ineptpdf --version
+          mv dist/ineptpdf "dist/ineptpdf-${{ matrix.asset }}"
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\build.bat
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $smoke = Start-Process -FilePath dist\ineptpdf.exe -ArgumentList "--version" -Wait -PassThru
+          if ($smoke.ExitCode -ne 0) { throw "ineptpdf.exe --version exited with $($smoke.ExitCode)" }
+          Move-Item dist\ineptpdf.exe "dist\ineptpdf-${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ineptpdf-${{ matrix.asset }}
+          path: dist/ineptpdf-${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: executable
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum ineptpdf-* > SHA256SUMS
+          gh release create "$TAG" ineptpdf-* SHA256SUMS --title "ineptpdf ${TAG#v}" \
+            --notes-file ../.github/release-notes.md --verify-tag

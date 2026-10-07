@@ -1,0 +1,31 @@
+[project]
+name = "ineptpdf"
+version = "9.0.0"
+description = "Decrypt Adobe ADEPT (Adobe Digital Editions), FileOpen and password-protected PDF files"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.13"
+dependencies = ["cryptography>=44"]
+
+[project.scripts]
+ineptpdf = "ineptpdf.cli:main"
+
+[project.gui-scripts]
+ineptpdf-gui = "ineptpdf.gui:run"
+
+[dependency-groups]
+dev = ["pytest>=8", "pypdf>=5", "ruff>=0.9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
