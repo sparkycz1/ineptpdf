@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
-from conftest import CONTENT, build_pdf, wrap
+from conftest import CONTENT, build_pdf, pinned_machine, wrap
 from test_decrypt import check_readable
 
 from ineptpdf import DecryptionError, UnsupportedError, decrypt_file
@@ -62,12 +62,6 @@ class LicenceServer:
         return [r for r in self.requests if r["Request"] == request]
 
 
-@pytest.fixture(autouse=True)
-def same_machine_everywhere(monkeypatch):
-    """decrypt_file() and the CLI probe the computer; pin that to a known answer."""
-    monkeypatch.setattr("ineptpdf.fileopen.probe_machine", lambda path="": linux())
-
-
 @pytest.fixture
 def server():
     server = LicenceServer()
@@ -93,7 +87,7 @@ def fileopen_pdf(server_url: str, info_extra: str = "", key: bytes = KEY) -> byt
 
 
 def linux() -> Machine:
-    return Machine(windows=False, user="jane", mac=MAC)
+    return pinned_machine()
 
 
 def options(**kwargs) -> FileOpenOptions:

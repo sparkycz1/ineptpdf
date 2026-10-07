@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from ineptpdf import Document, write_pdf
 from ineptpdf.crypto import Decryptor
 from ineptpdf.document import InUse
+from ineptpdf.fileopen import Machine
 from ineptpdf.objects import Name
 
 TEXT = "Hello (inept) world"
@@ -150,3 +151,13 @@ def wrap(plain: bytes, cipher: Decryptor, encrypt: dict) -> bytes:
 @pytest.fixture(scope="session")
 def adept() -> AdeptBook:
     return AdeptBook()
+
+
+def pinned_machine() -> Machine:
+    return Machine(windows=False, user="jane", mac=bytes.fromhex("0a1b2c3d4e5f"))
+
+
+@pytest.fixture(autouse=True)
+def same_machine_everywhere(monkeypatch):
+    """decrypt_file() and the CLI probe the computer; pin that to a known answer."""
+    monkeypatch.setattr("ineptpdf.fileopen.probe_machine", lambda path="": pinned_machine())
