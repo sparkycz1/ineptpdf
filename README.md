@@ -46,6 +46,11 @@ Choose a PDF; the window shows how it is protected. Then:
 The key field is needed only for Adobe Digital Editions books, the password field
 only for password-protected PDFs or a FileOpen login.
 
+If something fails, **Copy details** puts a report about the last attempt on the
+clipboard, ready to paste into an issue. It lists how the file is protected and
+what was exchanged with a licence server; logins, cookies and keys are replaced by
+their length. On the command line `--debug` prints the same.
+
 ## Command line
 
 The same program works as a command when given arguments. The downloadable
@@ -67,6 +72,7 @@ ineptpdf book.pdf -k adeptkey.der
 | `-o OUTPUT` | Output file (default: `INPUT.decrypted.pdf`). |
 | `-f` | Overwrite an existing output file. |
 | `--xref table\|stream` | Force the cross-reference format; default follows the input. |
+| `--debug` | Print diagnostic details (no logins, cookies or keys). |
 | `--gui` | Open the window. |
 
 From Python (`pip install .` or `uv add`):

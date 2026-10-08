@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="cross-reference format of the output (default: same as the input)",
     )
     parser.add_argument("-f", "--force", action="store_true", help="overwrite an existing output")
+    parser.add_argument("--debug", action="store_true", help="print diagnostic details")
     parser.add_argument("--gui", action="store_true", help="open the graphical interface")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     log = logging.getLogger("ineptpdf")
     progress = logging.StreamHandler(sys.stderr)  # e.g. which licence server is contacted
     log.addHandler(progress)
-    log.setLevel(logging.INFO)
+    log.setLevel(logging.DEBUG if args.debug else logging.INFO)
     try:
         if output.exists():
             if output.samefile(args.input):
@@ -106,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             "xref": args.xref,
         }
         try:
-            decrypt_file(args.input, output, password=args.password or "", **options)
+            damaged = decrypt_file(args.input, output, password=args.password or "", **options)
         except DecryptionError as exc:
             if (
                 str(exc) != "incorrect password"
@@ -114,11 +115,14 @@ def main(argv: list[str] | None = None) -> int:
                 or not options["prompt"]
             ):
                 raise
-            decrypt_file(args.input, output, password=_prompt("PDF password", True), **options)
+            password = _prompt("PDF password", True)
+            damaged = decrypt_file(args.input, output, password=password, **options)
     except (IneptError, OSError) as exc:
         print(f"ineptpdf: error: {exc}", file=sys.stderr)
         return 1
     finally:
         log.removeHandler(progress)
+    if damaged:
+        print(f"ineptpdf: warning: {len(damaged)} damaged objects were left out", file=sys.stderr)
     print(f"Decrypted: {output}")
     return 0

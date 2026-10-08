@@ -64,6 +64,15 @@ class Document:
         """Loads (and, once unlocked, decrypts) indirect object ``num``."""
         if num in self._cache:
             return self._cache[num]
+        try:
+            obj = self._load(num)
+        except PDFSyntaxError as exc:
+            raise PDFSyntaxError(f"object {num}: {exc}") from exc
+        if not isinstance(obj, Stream):  # streams can be huge; don't hold on to them
+            self._cache[num] = obj
+        return obj
+
+    def _load(self, num: int) -> PDFObject:
         match self.xref.get(num):
             case InUse(offset):
                 _, gen, obj = self._read_indirect(offset)
@@ -74,8 +83,6 @@ class Document:
                 obj = objects[index] if index < len(objects) else None
             case _:
                 obj = None
-        if not isinstance(obj, Stream):  # streams can be huge; don't hold on to them
-            self._cache[num] = obj
         return obj
 
     def resolve(self, obj: PDFObject) -> PDFObject:

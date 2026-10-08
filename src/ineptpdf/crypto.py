@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import logging
 import zlib
 from dataclasses import dataclass
 from hashlib import md5
@@ -15,10 +16,12 @@ from cryptography.hazmat.primitives.serialization import (
     load_pem_private_key,
 )
 
-from .document import Document
-from .errors import DecryptionError, UnsupportedError
+from .document import Document, InUse
+from .errors import DecryptionError, IneptError, UnsupportedError
 from .fileopen import FileOpenOptions, fetch_key
 from .objects import Name, Stream
+
+log = logging.getLogger("ineptpdf")
 
 type CipherName = Literal["rc4", "aes", "identity"]
 
@@ -68,6 +71,7 @@ class Decryptor:
     string_cipher: CipherName = "rc4"
     stream_cipher: CipherName = "rc4"
     obfuscated: bool = False  # ADEPT's alternative per-object key schedule
+    direct_key: bool = False  # AES-256 style: the file key is used for every object
     encrypt_metadata: bool = True
 
     def decrypt_string(self, num: int, gen: int, data: bytes) -> bytes:
@@ -94,6 +98,8 @@ class Decryptor:
         return data
 
     def _object_key(self, num: int, gen: int, cipher: CipherName) -> bytes:
+        if self.direct_key:
+            return self.key
         if self.obfuscated:
             n = ((num ^ 0x3569AC) & 0xFFFFFFFF).to_bytes(4, "little")
             g = ((gen ^ 0xCA96) & 0xFFFFFFFF).to_bytes(4, "little")
@@ -119,16 +125,83 @@ def unlock(
         case "EBX_HANDLER":
             if key is None:
                 raise DecryptionError("this is an ADEPT-protected PDF; a key file is required")
-            doc.decryptor = _adept(doc.encrypt, key)
+            chosen = _adept(doc.encrypt, key)
+            other = Decryptor(chosen.key, obfuscated=not chosen.obfuscated)
+            doc.decryptor = _working(doc, [chosen, other], "this book")
         case "Standard":
             doc.decryptor = _standard(doc.encrypt, doc.doc_id, password)
         case "FOPN_foweb":
             options = fileopen or FileOpenOptions(password=password or None)
-            doc.decryptor = Decryptor(fetch_key(doc.encrypt, options))
+            doc.decryptor = _working(
+                doc,
+                _fileopen_ciphers(doc.encrypt, fetch_key(doc.encrypt, options)),
+                "this document",
+            )
         case "FOPN_fLock" | "Adobe.APS" as name:
             raise UnsupportedError(f"{name} is not supported")
         case name:
             raise UnsupportedError(f"unknown security handler: {name}")
+
+
+def _working(doc: Document, candidates: list[Decryptor], what: str) -> Decryptor:
+    """The first candidate that demonstrably decrypts ``doc``'s compressed streams."""
+    verdicts = [_decrypts(doc, candidate) for candidate in candidates]
+    log.debug("cipher candidates: %s", list(zip(map(_describe, candidates), verdicts, strict=True)))
+    for candidate, verdict in zip(candidates, verdicts, strict=True):
+        if verdict:
+            return candidate
+    if all(verdict is False for verdict in verdicts):
+        raise DecryptionError(f"the key does not decrypt the contents of {what}")
+    return candidates[0]  # nothing in the file to test against
+
+
+def _describe(decryptor: Decryptor) -> str:
+    schedule = "direct" if decryptor.direct_key else "obfuscated" if decryptor.obfuscated else "md5"
+    return f"{decryptor.stream_cipher}/{schedule}/{len(decryptor.key) * 8}-bit"
+
+
+def _decrypts(doc: Document, candidate: Decryptor) -> bool | None:
+    """Whether ``candidate`` turns Flate streams into valid deflate data (None: no sample)."""
+    saved = doc.decryptor, dict(doc._cache), dict(doc._object_streams)
+    doc.decryptor = candidate
+    good = bad = scanned = 0
+    try:
+        for num, entry in doc.xref.items():
+            if good + bad >= 5 or scanned >= 400:
+                break
+            if not isinstance(entry, InUse) or num == doc.encrypt_num:
+                continue
+            scanned += 1
+            try:
+                obj = doc.getobj(num)
+            except (IneptError, ValueError):
+                continue
+            if not isinstance(obj, Stream) or obj.type == "XRef" or not obj.raw:
+                continue
+            first = obj.dict.get("Filter")
+            first = first[0] if isinstance(first, list) and first else first
+            if first not in (Name("FlateDecode"), Name("Fl")):
+                continue
+            try:
+                zlib.decompressobj().decompress(obj.raw[:65536])
+                good += 1
+            except zlib.error:
+                bad += 1
+    finally:
+        doc.decryptor, doc._cache, doc._object_streams = saved
+    return None if not good + bad else good > bad
+
+
+def _fileopen_ciphers(encrypt: dict, key: bytes) -> list[Decryptor]:
+    """What the encryption dictionary announces first, then the other known schemes."""
+    rc4_md5 = Decryptor(key)  # all that ineptpdf 8.4.51 knew
+    aes_md5 = Decryptor(key, "aes", "aes")
+    candidates = [rc4_md5, aes_md5]
+    if len(key) in (16, 24, 32):
+        candidates.append(Decryptor(key, "aes", "aes", direct_key=True))
+    if encrypt.get("V", 1) >= 4:
+        candidates.reverse()
+    return candidates
 
 
 # -- Adobe ADEPT ---------------------------------------------------------------

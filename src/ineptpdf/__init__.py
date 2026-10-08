@@ -12,7 +12,7 @@ from .errors import DecryptionError, IneptError, PDFSyntaxError, UnsupportedErro
 from .fileopen import FileOpenOptions
 from .writer import XRefMode, write_pdf
 
-__version__ = "9.0.0"
+__version__ = "9.0.1"
 __all__ = [
     "DecryptionError",
     "Document",
@@ -38,7 +38,7 @@ def decrypt_file(
     browser_cookies: bool = False,
     confirm: Callable[[str], bool] | None = None,
     xref: XRefMode = "auto",
-) -> None:
+) -> list[int]:
     """Writes a decrypted copy of ``source`` to ``destination``.
 
     ``key`` is the ADEPT private key (``adeptkey.der``), given either as a path or
@@ -50,7 +50,8 @@ def decrypt_file(
     the cookie is taken from the user's Firefox profile when the server needs one;
     a cookie that belongs to a different site than the server is sent only if
     ``confirm(question)`` returns true.
-    The destination only appears once decryption has fully succeeded.
+    The destination only appears once decryption has fully succeeded. Returns the
+    numbers of damaged objects that had to be left out (normally none).
     """
     if key is not None and not isinstance(key, bytes):
         key = Path(key).read_bytes()
@@ -72,8 +73,9 @@ def decrypt_file(
     fd, temp_name = tempfile.mkstemp(dir=destination.parent, prefix=destination.name, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as out:
-            write_pdf(doc, out, xref)
+            damaged = write_pdf(doc, out, xref)
         os.replace(temp_name, destination)
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
         raise
+    return damaged

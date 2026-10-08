@@ -1,11 +1,15 @@
 """Serialises a (decrypted) document back into a PDF file."""
 
+import logging
 import re
 import zlib
 from typing import BinaryIO, Literal
 
 from .document import Compressed, Document
+from .errors import PDFSyntaxError
 from .objects import Keyword, Name, PDFObject, Real, Ref, Stream
+
+log = logging.getLogger("ineptpdf")
 
 type XRefMode = Literal["auto", "table", "stream"]
 
@@ -49,12 +53,15 @@ def serialize(obj: PDFObject) -> bytes:
     raise TypeError(f"cannot serialise {type(obj).__name__}")
 
 
-def write_pdf(doc: Document, out: BinaryIO, xref: XRefMode = "auto") -> None:
+def write_pdf(doc: Document, out: BinaryIO, xref: XRefMode = "auto") -> list[int]:
     """Writes every object of ``doc`` to ``out``, without the encryption dictionary.
 
     ``xref`` selects the cross-reference format: ``"stream"`` keeps object streams
     intact (smaller output, PDF 1.5+), ``"table"`` unpacks them into a classic
     table, and ``"auto"`` follows whatever the input used.
+
+    Returns the numbers of objects that could not be read and were left out. Fails
+    only if that is most of the document.
     """
     use_stream = doc.uses_xref_streams if xref == "auto" else xref == "stream"
     position = 0
@@ -66,6 +73,7 @@ def write_pdf(doc: Document, out: BinaryIO, xref: XRefMode = "auto") -> None:
 
     emit(doc.header + b"\n%\xe2\xe3\xcf\xd3\n")
     entries: dict[int, int | Compressed] = {}
+    damaged: list[int] = []
     for num in sorted(doc.xref):
         entry = doc.xref[num]
         if num == 0 or num == doc.encrypt_num or entry is None:
@@ -73,7 +81,12 @@ def write_pdf(doc: Document, out: BinaryIO, xref: XRefMode = "auto") -> None:
         if use_stream and isinstance(entry, Compressed):
             entries[num] = entry  # stays inside its object stream
             continue
-        obj = doc.getobj(num)
+        try:
+            obj = doc.getobj(num)
+        except PDFSyntaxError as exc:
+            log.warning("Leaving out a damaged object: %s", exc)
+            damaged.append(num)
+            continue
         if obj is None:
             continue
         if isinstance(obj, Stream) and (
@@ -83,6 +96,8 @@ def write_pdf(doc: Document, out: BinaryIO, xref: XRefMode = "auto") -> None:
         entries[num] = position
         emit(b"%d 0 obj\n" % num + serialize(obj) + b"\nendobj\n")
 
+    if len(damaged) > len(entries):
+        raise PDFSyntaxError(f"most of the document is unreadable ({len(damaged)} objects)")
     trailer = {k: v for k, v in doc.trailer.items() if k not in _STALE_TRAILER_KEYS}
     size = max(entries, default=0) + 1
     startxref = position
@@ -117,3 +132,4 @@ def write_pdf(doc: Document, out: BinaryIO, xref: XRefMode = "auto") -> None:
             emit(b"%010d 00000 n \n" % offset if offset is not None else b"0000000000 65535 f \n")
         emit(b"trailer\n" + serialize(trailer | {"Size": size}) + b"\n")
     emit(b"startxref\n%d\n%%%%EOF\n" % startxref)
+    return damaged

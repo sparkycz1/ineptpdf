@@ -278,9 +278,15 @@ def fetch_key(encrypt: dict, options: FileOpenOptions, *, timeout: float = 30) -
     agent = fields.get("AGEN", _DEFAULT_USER_AGENT)
     log.info("Contacting the FileOpen licence server %s", urlsplit(server).netloc)
 
+    log.debug("FileOpen settings in the PDF: %s", _masked(fields))
+
     def ask(request: str, names: list[str], *, first_wins: bool = False) -> dict[str, str]:
-        query = "".join(f"&{name}={fields[name]}" for name in names if name in fields)
-        return _get(f"{base}Request={request}{query}", agent, timeout, first_wins)
+        sent = {name: fields[name] for name in names if name in fields}
+        log.debug("-> %sRequest=%s %s", base, request, _masked(sent))
+        query = "".join(f"&{name}={value}" for name, value in sent.items())
+        reply = _get(f"{base}Request={request}{query}", agent, timeout, first_wins)
+        log.debug("<- %s", _masked(reply))
+        return reply
 
     def ask_credentials(force_prompt: bool = False) -> None:
         user = None if force_prompt else options.username
@@ -438,11 +444,24 @@ def _get(url: str, agent: str, timeout: float, first_wins: bool) -> dict[str, st
     except (OSError, ValueError) as exc:
         raise DecryptionError(f"cannot reach the licence server: {exc}") from exc
     reply: dict[str, str] = {}
+    if "=" not in text:
+        log.debug("unexpected reply (%d characters), starts: %r", len(text), text[:200])
     for pair in text.strip("\r\n").split("&"):
         name, separator, value = pair.partition("=")
         if separator and not (first_wins and name in reply):
             reply[name] = value
     return reply
+
+
+_SECRET_FIELDS = ("UserName", "UserPass", "Session", "Code", "code")
+
+
+def _masked(values: dict[str, str]) -> dict[str, str]:
+    """``values`` with logins, cookies and keys replaced by their length."""
+    return {
+        name: f"<{len(value)} characters>" if name in _SECRET_FIELDS else value
+        for name, value in values.items()
+    }
 
 
 def _refused(reply: dict[str, str]) -> bool:

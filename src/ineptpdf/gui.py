@@ -1,7 +1,9 @@
 """Small Tk window: choose a PDF, then open it or save an unprotected copy."""
 
 import atexit
+import logging
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,28 @@ _PROTECTION_NAMES = {
     "FOPN_foweb": "FileOpen",
     "Standard": "password",
 }
+
+
+class _Trail(logging.Handler):
+    """Keeps the diagnostic messages of the last action, for "Copy details"."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(self.format(record))
+
+
+def describe_protection(doc: Document) -> str:
+    """The encryption dictionary without its bulky or sensitive values."""
+    if doc.encrypt is None:
+        return "not encrypted"
+    shown = {
+        name: f"<{len(value)} bytes>" if isinstance(value, bytes) else value
+        for name, value in doc.encrypt.items()
+    }
+    return f"{shown}, cross-reference streams: {doc.uses_xref_streams}, objects: {len(doc.xref)}"
 
 
 def default_output(source: Path) -> Path:
@@ -81,6 +105,13 @@ class App:
         ttk.Button(buttons, text="Remove protection and save", command=self.save).pack(
             side=tk.LEFT, padx=4
         )
+        ttk.Button(buttons, text="Copy details", command=self.copy_details).pack(
+            side=tk.LEFT, padx=4
+        )
+        self.trail = _Trail()
+        log = logging.getLogger("ineptpdf")
+        log.addHandler(self.trail)
+        log.setLevel(logging.DEBUG)
         # Room for a four-line message, so a long error never falls off the window.
         line_height = font.nametofont("TkDefaultFont").metrics("linespace")
         status_box = ttk.Frame(frame, height=4 * line_height)
@@ -100,6 +131,7 @@ class App:
         root.update_idletasks()
         root.minsize(root.winfo_reqwidth(), root.winfo_reqheight())
         self._scratch: Path | None = None
+        self.damaged = 0
 
     # -- actions --------------------------------------------------------------
 
@@ -130,9 +162,21 @@ class App:
         """Writes the unprotected copy next to the original."""
         source = self._source()
         if source and (target := self._decrypt(source, default_output(source))):
-            self.status.set(f"Saved: {target}")
+            note = f" ({self.damaged} damaged objects left out)" if self.damaged else ""
+            self.status.set(f"Saved{note}: {target}")
             return target
         return None
+
+    def copy_details(self) -> str:
+        """Puts a report about the last action on the clipboard. No keys or logins in it."""
+        report = "\n".join(
+            [f"ineptpdf {__version__}, Python {platform.python_version()}, {platform.platform()}"]
+            + self.trail.lines
+        )
+        self.root.clipboard_clear()
+        self.root.clipboard_append(report)
+        self.status.set("Details copied to the clipboard; paste them into your report.")
+        return report
 
     def open(self) -> Path | None:
         """Shows the document in the default viewer without keeping a copy."""
@@ -164,22 +208,35 @@ class App:
     def _decrypt(self, source: Path, target: Path, allow_plain: bool = False) -> Path | None:
         self.status.set("Working...")
         self.root.update_idletasks()
+        self.trail.lines.clear()
+        self.damaged = 0
+        log = logging.getLogger("ineptpdf")
         try:
-            if allow_plain and Document(source.read_bytes()).encryption_filter is None:
+            doc = Document(source.read_bytes())
+            log.debug("protection: %s", describe_protection(doc))
+            if allow_plain and doc.encryption_filter is None:
                 return source  # nothing to remove; show the original
-            decrypt_file(
-                source,
-                target,
-                key=self.key.get().strip() or None,
-                password=self.password.get(),
-                browser_cookies=True,
-                prompt=self._ask,
-                confirm=self._confirm,
-            )
+            self.damaged = len(self._run(source, target))
         except (IneptError, OSError) as exc:
+            log.debug("failed", exc_info=True)
             self.status.set(f"Error: {exc}")
             return None
+        except Exception as exc:  # a bug; a windowed program has nowhere else to show it
+            log.debug("crashed", exc_info=True)
+            self.status.set(f"Unexpected error ({type(exc).__name__}: {exc}). Use Copy details.")
+            return None
         return target
+
+    def _run(self, source: Path, target: Path) -> list[int]:
+        return decrypt_file(
+            source,
+            target,
+            key=self.key.get().strip() or None,
+            password=self.password.get(),
+            browser_cookies=True,
+            prompt=self._ask,
+            confirm=self._confirm,
+        )
 
     def _confirm(self, question: str) -> bool:
         from tkinter import messagebox
